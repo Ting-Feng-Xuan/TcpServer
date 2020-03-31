@@ -26,10 +26,43 @@
 #include<iostream>
 using namespace std;
 
+/*  client socket manage */
+class ClientSocket
+{
+public:
+	ClientSocket(SOCKET sock = INVALID_SOCKET)
+	{
+		_sock = sock;
+		LastPos = 0;
+		memset(MsgBuf, 0, sizeof(MsgBuf));
+	}
+
+	SOCKET Socket()
+	{
+		return _sock;
+	}
+	char *getMsgBuf()
+	{
+		return MsgBuf;
+	}
+	int getLastPos()
+	{
+		return LastPos;
+	}
+	void setLastPos(int pos)
+	{
+		LastPos = pos;
+	}
+private:
+	SOCKET _sock;
+	int LastPos;
+	char MsgBuf[RECV_BUFF_SIZE * 10];
+};
+
 class TcpServer
 {
 	SOCKET _sock;
-	vector<SOCKET>g_clients;
+	vector<ClientSocket *>_clients;
 public:
 	TcpServer()
 	{
@@ -62,7 +95,7 @@ public:
 		if (_sock == INVALID_SOCKET)
 		{
 			cout << "error: socket create failed!" << endl;
-			return SOCKET_ERROR;
+			return SOCK_ERROR;
 		}
 		sockaddr_in _sin = {};
 		_sin.sin_family = AF_INET;
@@ -77,14 +110,14 @@ public:
 		if (ret < 0)
 		{
 			cout << "error: bind failed!" << endl;
-			return SOCKET_ERROR;
+			return SOCK_ERROR;
 		}
 
 		ret = listen(_sock, LISTEN_MAX);
 		if (ret < 0)
 		{
 			cout << "error: listen failed!" << endl;
-			return SOCKET_ERROR;
+			return SOCK_ERROR;
 		}
 		cout << "Server start..." << endl;
 		return _sock;
@@ -95,7 +128,7 @@ public:
 		if (socket == INVALID_SOCKET)
 		{
 			cout << "socket error: scoket dose not initialization!" << endl;
-			return SOCKET_ERROR;
+			return SOCK_ERROR;
 		}
 		sockaddr_in ClientAddr = {};
 		int ClientAddrLen = sizeof(sockaddr_in);
@@ -108,7 +141,7 @@ public:
 		 if (_ClientSock == INVALID_SOCKET)
 		 {
 			 cout << "error: accept clinet invalid connection!" << endl;
-			 return SOCKET_ERROR;
+			 return SOCK_ERROR;
 		 }
 		 else
 		 {
@@ -124,16 +157,18 @@ public:
 		if (_sock != INVALID_SOCKET)
 		{
 #ifdef _WIN32
-			for (int i = 0; i < (int)g_clients.size(); i++)
+			for (int i = 0; i < (int)_clients.size(); i++)
 			{
-				closesocket(g_clients[i]);
+				closesocket(_clients[i]->Socket());
+				delete _clients[i];
 			}
 			closesocket(_sock);
 			WSACleanup();
 #else
 			for (int i = 0; i < g_clients.size(); i++)
 			{
-				close(g_clients[i]);
+				close(_clients[i]->Socket());
+				delete _clients[i];
 			}
 			close(_sock);
 #endif
@@ -158,11 +193,19 @@ public:
 		FD_SET(_sock, &fdWrite);
 		FD_SET(_sock, &fdExcept);
 
-		for (int i = 0; i < (int)g_clients.size(); i++)
+		SOCKET maxSock = _sock;
+		for (int i = 0; i < (int)_clients.size(); i++)
 		{
-			FD_SET(g_clients[i],&fdRead);
+			FD_SET(_clients[i]->Socket(),&fdRead);
+			if (maxSock < _clients[i]->Socket())
+			{
+				maxSock = _clients[i]->Socket();
+			}
 		}
-		int ret = select(_sock + 1, &fdRead, &fdWrite, &fdExcept, NULL);
+		/* select has differnt achieve between Windows and Linux
+		 * first argument is MAX of all socket
+		 */
+		int ret = select(maxSock + 1, &fdRead, &fdWrite, &fdExcept, NULL);
 		if (ret < 0)
 		{
 			cout << "error:select task exit!" << endl;
@@ -172,36 +215,60 @@ public:
 		{
 			FD_CLR(_sock,&fdRead);
 			SOCKET ClientSock = Accept(_sock);
-			if (ClientSock != SOCKET_ERROR)
+			if (ClientSock != SOCK_ERROR)
 			{
-				g_clients.push_back(ClientSock);
+				_clients.push_back(new ClientSocket(ClientSock));
 			}
 		}
-		for (int i = 0; i < (int)fdRead.fd_count; i++)
+		for (int i = 0; i < _clients.size() - 1; i++)
 		{
-			if (-1 == RecvData(fdRead.fd_array[i]))
+			if (-1 == RecvData(_clients[i]))
 			{
-				auto iter = find(g_clients.begin(), g_clients.end(), fdRead.fd_array[i]);
-				if (iter != g_clients.end())
+				auto iter = _clients.begin();
+				if (iter != _clients.end())
 				{
-					g_clients.erase(iter);
+					delete _clients[i];
+					_clients.erase(iter);
 				}
 			}
 		}
 	}
 	/* receive data */
-	int RecvData(SOCKET ClientSocket)
+	int RecvData(ClientSocket *Client)
 	{
-		DataHeader header;
-		if (IsConnecting(ClientSocket))
+		
+		if (IsConnecting(Client->Socket()))
 		{
-			int ret = (int)recv(ClientSocket,(char *)&header, sizeof(DataHeader), 0);
-			if (ret <= 0)
+			DataHeader header;
+			char RecvBuf[RECV_BUFF_SIZE] = {};
+			int RecvLen = (int)recv(Client->Socket(),(char *)&header, sizeof(DataHeader), 0);
+			if (RecvLen <= 0)
 			{
-				cout << "warning:client<socket = "<<ClientSocket<<"> clsoed!" << endl;
+				cout << "warning:client<socket = "<< Client ->Socket()<<"> clsoed!" << endl;
 				return -1;
 			}
-			HandleMessage(ClientSocket, &header);
+			/* copy message */
+			memcpy(Client->getMsgBuf() + Client->getLastPos(), RecvBuf, RecvLen);
+			Client->setLastPos(Client->getLastPos() + RecvLen);
+			while (Client->getLastPos() >= sizeof(DataHeader))
+			{
+				DataHeader *header = (DataHeader *)Client->getMsgBuf();
+				if (Client->getLastPos() >= header->datalen)
+				{
+					/* cache message length */
+					int nSize = Client->getLastPos() - header->datalen;
+					/* response net message */
+					HandleMessage(Client->Socket(),header);
+					/* reflush cache message buf */
+					memcpy(Client->getMsgBuf(), Client->getMsgBuf() + header->datalen, nSize);
+
+					Client->setLastPos(nSize); 
+				}
+				else
+				{
+					break;
+				}
+			}
 		}
 		return 0;
 	}
@@ -269,9 +336,9 @@ public:
 	/* send data to all client */
 	void SendDataToAll(DataHeader *header)
 	{
-		for (int i = (int)g_clients.size() - 1; i >= 0; i--)
+		for (int i = (int)_clients.size() - 1; i >= 0; i--)
 		{
-			SendData(g_clients[i], header);
+			SendData(_clients[i]->Socket(), header);
 		}
 		
 	}

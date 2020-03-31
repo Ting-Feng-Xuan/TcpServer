@@ -5,6 +5,7 @@
 #define SERVER_PORT 8080
 #define LISTEN_MAX	1024
 #define DATA_MAX	128
+#define	RECV_BUFF_SIZE	10240
 
 #ifndef false
 	#define false	0
@@ -12,7 +13,7 @@
 #ifndef true
 	#define true 1
 #endif
-#define SOCKE_ERROR (-1)
+#define SOCK_ERROR (-1)
 #include<string.h>
 
 enum MessageCmd
