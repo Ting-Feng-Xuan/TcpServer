@@ -7,11 +7,11 @@
 	#define _WINSOCK_DEPRECATED_NO_WARNINGS
 	#include<windows.h>
 	#include<WinSock2.h>
-	#include<vector>
 	#pragma comment(lib,"ws2_32.lib")
 
 #else               //uninx platform
 	#define SOCKET unsigned int
+    #define INVALID_SOCKET (SOCKET)(~0)
 	#include<stdio.h>
 	#include<sys/types.h>
 	#include<sys/socket.h>
@@ -24,6 +24,7 @@
 #endif
 #include"TcpServer.h"
 #include<iostream>
+#include<vector>
 using namespace std;
 
 /*  client socket manage */
@@ -165,7 +166,7 @@ public:
 			closesocket(_sock);
 			WSACleanup();
 #else
-			for (int i = 0; i < g_clients.size(); i++)
+			for (int i = 0; i < _clients.size(); i++)
 			{
 				close(_clients[i]->Socket());
 				delete _clients[i];
